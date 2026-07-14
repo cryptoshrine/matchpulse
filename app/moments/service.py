@@ -10,12 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.core.storage import get_storage_service
-from app.infographic.generate_ai_infographic_tool import (
-    _get_budget_tracker,
-    _get_gemini_client,
-)
-from app.infographic.infographic_generator import InfographicGenerator
+from app.infographic.generate_ai_infographic_tool import create_infographic_generator
 from app.live.schemas import LiveEventFrame, LiveMatchState
 from app.live.txline.client import TxLineClient
 from app.moments.models import MatchMoment
@@ -88,17 +83,10 @@ async def _render_card(
     if not settings.ai_infographic_enabled:
         logger.info("moments.card_render_skipped", reason="feature_disabled")
         return None
-    gemini_client = _get_gemini_client()
-    if gemini_client is None:
+    generator = create_infographic_generator(output_dir="output")
+    if generator is None:
         logger.info("moments.card_render_skipped", reason="client_unconfigured")
         return None
-
-    generator = InfographicGenerator(
-        output_dir="output",
-        storage_service=get_storage_service(),
-        gemini_client=gemini_client,
-        budget_tracker=_get_budget_tracker(),
-    )
     result = await generator.generate(
         template="fan_engagement",
         data={

@@ -47,6 +47,22 @@ async def _find_buffered_event(match_id: int, event_id: str) -> LiveEventFrame |
     return next((event for event in reversed(events) if event.event_id == event_id), None)
 
 
+def _public_image_url(request: Request, card_image_url: str | None) -> str:
+    """Resolve stored local paths into absolute metadata image URLs."""
+    forwarded_scheme = request.headers.get("x-forwarded-proto", "").split(",", maxsplit=1)[0]
+    if card_image_url is None:
+        placeholder_url = request.url_for("moment_placeholder")
+        if forwarded_scheme in {"http", "https"}:
+            placeholder_url = placeholder_url.replace(scheme=forwarded_scheme)
+        return str(placeholder_url)
+    if card_image_url.startswith(("https://", "http://")):
+        return card_image_url
+    base_url = request.base_url
+    if forwarded_scheme in {"http", "https"}:
+        base_url = base_url.replace(scheme=forwarded_scheme)
+    return f"{str(base_url).rstrip('/')}/{card_image_url.lstrip('/')}"
+
+
 @router.get("/placeholder.svg", name="moment_placeholder", include_in_schema=False)
 async def moment_placeholder() -> Response:
     """Serve a stable public image when best-effort card generation is unavailable."""
@@ -112,7 +128,7 @@ async def get_moment_metadata(
 ) -> MomentMetadataResponse:
     """Serve public Metaplex-standard off-chain metadata without authentication."""
     moment = await _require_moment(db, moment_id)
-    image = moment.card_image_url or str(request.url_for("moment_placeholder"))
+    image = _public_image_url(request, moment.card_image_url)
     attributes = [
         MomentMetadataAttribute(trait_type="Match ID", value=str(moment.match_id)),
         MomentMetadataAttribute(trait_type="Minute", value=str(moment.minute)),

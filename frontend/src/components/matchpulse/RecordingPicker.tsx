@@ -20,6 +20,7 @@ interface RecordingPickerProps {
 }
 
 const SPEEDS = [1, 5, 10, 30, 60] as const;
+const HERO_RECORDING_FILENAME = '18237038_updates_recovery.jsonl';
 
 export function RecordingPicker({ onReplayStarted }: RecordingPickerProps) {
   const [recordings, setRecordings] = useState<Recording[]>([]);
@@ -40,8 +41,11 @@ export function RecordingPicker({ onReplayStarted }: RecordingPickerProps) {
         if (!response.ok) throw new Error(`Could not load recordings (${response.status})`);
         const payload = (await response.json()) as RecordingsResponse;
         setRecordings(payload.recordings);
+        const heroRecording = payload.recordings.find(
+          (recording) => recording.filename === HERO_RECORDING_FILENAME,
+        );
         const firstReplayable = payload.recordings.find((recording) => recording.match_id !== null);
-        setSelectedFilename(firstReplayable?.filename ?? '');
+        setSelectedFilename(heroRecording?.filename ?? firstReplayable?.filename ?? '');
       } catch (requestError) {
         if (!(requestError instanceof DOMException && requestError.name === 'AbortError')) {
           setError(requestError instanceof Error ? requestError.message : 'Could not load recordings');

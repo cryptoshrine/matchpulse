@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from app.live.notification_formatter import detect_notification_triggers
 from app.live.notification_schemas import EventAmendmentNotification
 from app.live.processor import StateUpdater
@@ -14,6 +16,14 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sample_session.jsonl"
 PENALTY_REVISIONS_FIXTURE = (
     Path(__file__).parent / "fixtures" / "france_spain_penalty_revisions.jsonl"
 )
+REAL_FRANCE_SPAIN_RECORDING = (
+    Path(__file__).parents[4]
+    / "data"
+    / "txline_recordings"
+    / "18237038_updates_recovery.jsonl"
+)
+
+
 def _raw_frames() -> list[dict[str, Any]]:
     """Load typed raw frames from the committed provider excerpt."""
     frames: list[dict[str, Any]] = []
@@ -185,3 +195,25 @@ async def test_penalty_revision_emits_non_scoring_scorer_amendment() -> None:
     assert isinstance(notification, EventAmendmentNotification)
     assert notification.player_name == "Oyarzabal Ugarte, Mikel"
     assert "SCORER CONFIRMED" in notification.message
+
+
+@pytest.mark.skipif(
+    not REAL_FRANCE_SPAIN_RECORDING.is_file(),
+    reason="Full licensed recording is intentionally not committed",
+)
+def test_full_france_spain_recording_preserves_goal_attribution() -> None:
+    """All 1,027 real envelopes yield the sequence-222 scorer amendment."""
+    assert len(REAL_FRANCE_SPAIN_RECORDING.read_text(encoding="utf-8").splitlines()) == 1027
+
+    events = _normalize_recording(REAL_FRANCE_SPAIN_RECORDING, match_id=18237038)
+    amendments = [
+        event
+        for event in events
+        if event.raw_data.get("amends_event_id")
+        == "txline:18237038:penalty_outcome:213"
+    ]
+
+    assert len(amendments) == 1
+    assert amendments[0].event_index == 222
+    assert amendments[0].player_id == 463984
+    assert amendments[0].player_name == "Oyarzabal Ugarte, Mikel"

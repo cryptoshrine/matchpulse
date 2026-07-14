@@ -112,12 +112,26 @@ async def test_render_card_disabled_skips_generator() -> None:
             "app.moments.service.get_settings",
             return_value=SimpleNamespace(ai_infographic_enabled=False),
         ),
-        patch("app.moments.service.InfographicGenerator") as generator,
+        patch("app.moments.service.create_infographic_generator") as generator,
     ):
         result = await service._render_card(_penalty_event(), _match_state(), "description")
 
     assert result is None
     generator.assert_not_called()
+
+
+async def test_render_card_unconfigured_skips_generation() -> None:
+    """Missing image provider configuration degrades to a proof-only moment."""
+    with (
+        patch(
+            "app.moments.service.get_settings",
+            return_value=SimpleNamespace(ai_infographic_enabled=True),
+        ),
+        patch("app.moments.service.create_infographic_generator", return_value=None),
+    ):
+        result = await service._render_card(_penalty_event(), _match_state(), "description")
+
+    assert result is None
 
 
 async def test_missing_real_sequence_skips_proof_fetch() -> None:

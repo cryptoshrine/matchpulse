@@ -141,6 +141,31 @@ async def test_metadata_endpoint_shape_and_placeholder_fallback() -> None:
     assert traits["TxLINE Proof"] == '{"eventStatRoot":"root"}'
 
 
+async def test_metadata_endpoint_resolves_local_card_to_public_url() -> None:
+    """Local output paths become absolute URLs that wallets can retrieve."""
+    moment = _moment(card_image_url="output/moments/card.png")
+    async for client in _client():
+        with patch("app.moments.routes.service.get_moment", new=AsyncMock(return_value=moment)):
+            response = await client.get("/api/moments/moment-1/metadata")
+
+    assert response.status_code == 200
+    assert response.json()["image"] == "http://test/output/moments/card.png"
+
+
+async def test_metadata_endpoint_honours_forwarded_https_scheme() -> None:
+    """Reverse-proxied metadata retains a publicly fetchable HTTPS image URL."""
+    moment = _moment(card_image_url="output/moments/card.png")
+    async for client in _client():
+        with patch("app.moments.routes.service.get_moment", new=AsyncMock(return_value=moment)):
+            response = await client.get(
+                "/api/moments/moment-1/metadata",
+                headers={"x-forwarded-proto": "https"},
+            )
+
+    assert response.status_code == 200
+    assert response.json()["image"] == "https://test/output/moments/card.png"
+
+
 async def test_matchpulse_health_endpoint_counts_recordings(tmp_path: Path) -> None:
     (tmp_path / "hero.jsonl").write_text("{}\n", encoding="utf-8")
     (tmp_path / "secondary.jsonl").write_text("{}\n", encoding="utf-8")
