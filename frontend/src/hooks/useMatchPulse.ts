@@ -105,6 +105,7 @@ export function useMatchPulse({
       };
 
       ws.onerror = (error) => {
+        if (disposed) return;
         console.error('[useMatchPulse] WebSocket error:', error);
       };
     };

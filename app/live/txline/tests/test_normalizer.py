@@ -58,6 +58,76 @@ def _normalize_recording(path: Path, match_id: int) -> list[LiveEventFrame]:
     return events
 
 
+def _penalty_revision_frames() -> list[dict[str, Any]]:
+    """Load the committed France-Spain penalty-revision frames (incl. a lineup)."""
+    frames: list[dict[str, Any]] = []
+    for line in PENALTY_REVISIONS_FIXTURE.read_text(encoding="utf-8").splitlines():
+        envelope = cast(dict[str, Any], json.loads(line))
+        frames.append(cast(dict[str, Any], envelope["data"]))
+    return frames
+
+
+def _collect_events(
+    normalizer: TxLineNormalizer, frames: list[dict[str, Any]]
+) -> list[LiveEventFrame]:
+    events: list[LiveEventFrame] = []
+    for raw in frames:
+        events.extend(normalizer.to_phase_events(raw))
+        event = normalizer.to_event_frame(raw)
+        if event is not None:
+            events.append(event)
+    return events
+
+
+def test_prime_lineups_names_events_that_sse_would_leave_anonymous() -> None:
+    """Live SSE omits Lineups; a REST prime must name later events, not re-emit them.
+
+    Regression for the live-final gap: without priming, every live event resolves
+    player_id/team_id to None and surfaces raw IDs.
+    """
+    frames = _penalty_revision_frames()
+    lineup_frames = [f for f in frames if (f.get("Action") or f.get("action")) == "lineups"]
+    event_frames = [f for f in frames if (f.get("Action") or f.get("action")) != "lineups"]
+    assert lineup_frames, "fixture should contain a lineups frame"
+    assert event_frames, "fixture should contain event frames"
+
+    # SSE-only (no lineup ingested): the scorer resolves to no name — the bug.
+    unprimed = TxLineNormalizer(match_id=18237038)
+    unprimed_events = _collect_events(unprimed, event_frames)
+    assert unprimed_events
+    assert all(event.player_name is None for event in unprimed_events)
+    assert all(event.team_name is None for event in unprimed_events)
+
+    # Priming from the REST lineup frame first names the identical event stream.
+    primed = TxLineNormalizer(match_id=18237038)
+    learned = primed.prime_lineups(lineup_frames)
+    assert learned > 0
+    primed_events = _collect_events(primed, event_frames)
+    assert any(
+        event.player_name == "Oyarzabal Ugarte, Mikel" and event.team_name == "Spain"
+        for event in primed_events
+    )
+    # Priming must not itself emit events (names only).
+    assert len(_collect_events(TxLineNormalizer(match_id=18237038), [])) == 0
+
+
+def test_prime_lineups_survives_scores_message_roundtrip() -> None:
+    """The client primes from model_dump()'d messages — Lineups must survive it.
+
+    Guards the exact client seam: TxLineScoresMessage(extra="allow") must retain
+    the Lineups block through validate → model_dump so prime_lineups sees it.
+    """
+    from app.live.txline.schemas import TxLineScoresMessage
+
+    lineup_frame = _penalty_revision_frames()[0]
+    message = TxLineScoresMessage.model_validate(lineup_frame)
+    normalizer = TxLineNormalizer(match_id=18237038)
+
+    learned = normalizer.prime_lineups([message.model_dump()])
+
+    assert learned > 0
+
+
 def test_golden_session_emits_phases_goals_and_card() -> None:
     """Real revisions collapse to two goals, one card, and four phases."""
     events = _normalize_session()

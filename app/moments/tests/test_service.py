@@ -46,10 +46,17 @@ def _match_state() -> LiveMatchState:
     )
 
 
-def _mock_db() -> AsyncMock:
-    """Return an async session mock with synchronous ``add``."""
+def _mock_db(existing: object | None = None) -> AsyncMock:
+    """Return an async session mock with synchronous ``add``.
+
+    By default the duplicate-check query finds no existing moment. Pass
+    ``existing`` to simulate a moment already persisted for this event.
+    """
     db = AsyncMock(spec=AsyncSession)
     db.add = MagicMock()
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none.return_value = existing
+    db.execute.return_value = execute_result
     return db
 
 
@@ -70,6 +77,35 @@ async def test_create_moment_success_uses_real_sequence_and_stat_major_keys() ->
     db.add.assert_called_once_with(moment)
     db.commit.assert_awaited_once()
     db.refresh.assert_awaited_once_with(moment)
+
+
+async def test_create_moment_idempotent_returns_existing() -> None:
+    """A moment already exists for this event (e.g. minted on a prior replay).
+
+    create_moment must return it instead of re-inserting (which violates the
+    unique constraint and 500s) or re-rendering the ~30s card.
+    """
+    existing = service.MatchMoment(
+        id="existing-1",
+        match_id=18237038,
+        event_id="txline:18237038:penalty_outcome:213",
+        event_type="Shot",
+        minute=21,
+        description="Oyarzabal Ugarte, Mikel converts a penalty for Spain in the 21' minute",
+    )
+    db = _mock_db(existing=existing)
+
+    with (
+        patch("app.moments.service._render_card", new=AsyncMock()) as render,
+        patch("app.moments.service._fetch_txline_proof", new=AsyncMock()) as fetch,
+    ):
+        moment = await service.create_moment(db, 18237038, _penalty_event(), _match_state())
+
+    assert moment is existing
+    render.assert_not_awaited()
+    fetch.assert_not_awaited()
+    db.add.assert_not_called()
+    db.commit.assert_not_awaited()
 
 
 async def test_create_moment_proof_fetch_fails_gracefully() -> None:
@@ -132,6 +168,30 @@ async def test_render_card_unconfigured_skips_generation() -> None:
         result = await service._render_card(_penalty_event(), _match_state(), "description")
 
     assert result is None
+
+
+async def test_render_card_credits_txline_attribution() -> None:
+    """Moment cards must credit TxODDS TxLINE, not StatsBomb (licensing)."""
+    generator = SimpleNamespace(
+        generate=AsyncMock(return_value={"file_path": "https://cdn.example/card.png"})
+    )
+    with (
+        patch(
+            "app.moments.service.get_settings",
+            return_value=SimpleNamespace(ai_infographic_enabled=True),
+        ),
+        patch("app.moments.service.create_infographic_generator", return_value=generator),
+    ):
+        result = await service._render_card(_penalty_event(), _match_state(), "description")
+
+    assert result == "https://cdn.example/card.png"
+    assert generator.generate.await_args is not None
+    assert generator.generate.await_args.kwargs["data_attribution"] == "TxODDS TxLINE"
+    # Cards are minted; they must be capped for NFT preview proxies.
+    assert generator.generate.await_args.kwargs["max_dimension"] == 1200
+    comparison = generator.generate.await_args.kwargs["data"]["comparison_data"]
+    assert comparison["home_team"] == _match_state().home_team
+    assert comparison["away_team"] == _match_state().away_team
 
 
 async def test_missing_real_sequence_skips_proof_fetch() -> None:

@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -94,6 +95,8 @@ async def _render_card(
             "content_type": "stat_highlight",
             "highlight_stat": description,
             "comparison_data": {
+                "home_team": state.home_team,
+                "away_team": state.away_team,
                 "home_score": state.home_score,
                 "away_score": state.away_score,
                 "minute": event.minute,
@@ -102,6 +105,10 @@ async def _render_card(
         chart_images=None,
         platform=VizPlatform.TWITTER,
         output_format=VizFormat.PNG,
+        data_attribution="TxODDS TxLINE",
+        # Cards get minted; keep them small enough for NFT image-preview proxies
+        # (e.g. Solana Explorer) to render — the raw Gemini PNG is ~4MB/2.7K px.
+        max_dimension=1200,
     )
     file_path = result.get("file_path")
     return str(file_path) if file_path else None
@@ -114,6 +121,26 @@ async def _fetch_txline_proof(
 ) -> dict[str, Any]:
     """Fetch one authenticated multiproof through the shared TxLINE client."""
     return await TxLineClient().get_stat_validation(fixture_id, seq, stat_keys)
+
+
+async def _find_existing_moment(
+    db: AsyncSession,
+    match_id: int,
+    event_id: str,
+) -> MatchMoment | None:
+    """Return the persisted moment for this fixture/event, if one exists.
+
+    Moments are unique on ``(match_id, event_id)``. The same event recurs on
+    every replay, so callers use this to stay idempotent instead of inserting
+    a duplicate.
+    """
+    result = await db.execute(
+        select(MatchMoment).where(
+            MatchMoment.match_id == match_id,
+            MatchMoment.event_id == event_id,
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def create_moment(
@@ -139,6 +166,20 @@ async def create_moment(
         event_id=event.event_id,
         event_type=event.event_type,
     )
+
+    # Moments are unique on (match_id, event_id) and the same event recurs on
+    # every replay. Return the existing moment instead of re-inserting (which
+    # would violate the unique constraint) or re-rendering the card.
+    existing = await _find_existing_moment(db, match_id, event.event_id)
+    if existing is not None:
+        logger.info(
+            "moments.create_idempotent_hit",
+            moment_id=existing.id,
+            match_id=match_id,
+            event_id=event.event_id,
+        )
+        return existing
+
     description = describe_event(event)
     card_image_url: str | None = None
     try:
@@ -193,7 +234,22 @@ async def create_moment(
         txline_proof_json=txline_proof_json,
     )
     db.add(moment)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # A concurrent request created the same (match_id, event_id) between our
+        # pre-check and commit. Roll back and return the winner's row.
+        await db.rollback()
+        existing = await _find_existing_moment(db, match_id, event.event_id)
+        if existing is not None:
+            logger.info(
+                "moments.create_idempotent_race",
+                moment_id=existing.id,
+                match_id=match_id,
+                event_id=event.event_id,
+            )
+            return existing
+        raise
     await db.refresh(moment)
     logger.info(
         "moments.create_completed",

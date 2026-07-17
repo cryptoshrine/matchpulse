@@ -12,19 +12,56 @@ import { NarrativeFeed } from '@/components/matchpulse/NarrativeFeed';
 import { RecordingPicker } from '@/components/matchpulse/RecordingPicker';
 import { ScoreHeader } from '@/components/matchpulse/ScoreHeader';
 import { useMatchPulse } from '@/hooks/useMatchPulse';
-import type { LiveMatchState, LiveNotification } from '@/types/api';
+import type { LiveMatchState, LiveNotification, LiveNotificationType } from '@/types/api';
 
 const MAX_NOTIFICATIONS = 100;
 const DEVNET_ENDPOINT = clusterApiUrl('devnet');
+const ACTIVE_MATCH_ID_STORAGE_KEY = 'matchpulse.activeMatchId.v1';
+const BANNER_WORTHY_TYPES: ReadonlySet<LiveNotificationType> = new Set([
+  'goal',
+  'penalty',
+  'var',
+  'event_amendment',
+  'fulltime',
+  'momentum_shift',
+]);
+
+function isBannerWorthy(notification: LiveNotification): boolean {
+  if (notification.notification_type === 'card') {
+    return notification.card_color === 'red';
+  }
+  return BANNER_WORTHY_TYPES.has(notification.notification_type);
+}
+
+function readActiveMatchId(): number | null {
+  if (typeof window === 'undefined') return null;
+
+  const storedMatchId = window.sessionStorage.getItem(ACTIVE_MATCH_ID_STORAGE_KEY);
+  if (storedMatchId === null) return null;
+
+  const matchId = Number(storedMatchId);
+  return Number.isSafeInteger(matchId) && matchId > 0 ? matchId : null;
+}
+
+function storeActiveMatchId(matchId: number | null): void {
+  if (typeof window === 'undefined') return;
+
+  if (matchId === null) {
+    window.sessionStorage.removeItem(ACTIVE_MATCH_ID_STORAGE_KEY);
+    return;
+  }
+  window.sessionStorage.setItem(ACTIVE_MATCH_ID_STORAGE_KEY, String(matchId));
+}
 
 function MatchPulseExperience() {
-  const [matchId, setMatchId] = useState<number | null>(null);
+  const [matchId, setMatchId] = useState<number | null>(readActiveMatchId);
   const [matchState, setMatchState] = useState<LiveMatchState | null>(null);
   const [notifications, setNotifications] = useState<LiveNotification[]>([]);
   const [momentumDelta, setMomentumDelta] = useState(0);
   const [latestAlert, setLatestAlert] = useState<LiveNotification | null>(null);
 
   const handleReplayStarted = useCallback((newMatchId: number) => {
+    storeActiveMatchId(newMatchId);
     setMatchId(newMatchId);
     setMatchState(null);
     setNotifications([]);
@@ -34,16 +71,23 @@ function MatchPulseExperience() {
 
   const handleNotification = useCallback((notification: LiveNotification) => {
     setNotifications((current) => [...current, notification].slice(-MAX_NOTIFICATIONS));
-    if (notification.notification_type === 'momentum_shift') {
+    if (isBannerWorthy(notification)) {
       setLatestAlert(notification);
-      if (notification.momentum_delta !== undefined) {
-        setMomentumDelta(notification.momentum_delta);
-      }
+    }
+    if (
+      notification.notification_type === 'momentum_shift' &&
+      notification.momentum_delta !== undefined
+    ) {
+      setMomentumDelta(notification.momentum_delta);
     }
   }, []);
 
   const handleStateSnapshot = useCallback(
     (state: LiveMatchState | null, currentMomentumDelta: number) => {
+      if (state === null) {
+        storeActiveMatchId(null);
+        setMatchId(null);
+      }
       setMatchState(state);
       setMomentumDelta(currentMomentumDelta);
     },

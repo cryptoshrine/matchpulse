@@ -22,6 +22,22 @@ interface RecordingPickerProps {
 const SPEEDS = [1, 5, 10, 30, 60] as const;
 const HERO_RECORDING_FILENAME = '18237038_updates_recovery.jsonl';
 
+/**
+ * Live SSE captures use a `{fixture}_{YYYYMMDD}_{HHMMSS}.jsonl` name. They lack
+ * in-band lineups (raw IDs, not names), so we hide them from the picker and keep
+ * only the REST recovery/historical files, which carry the full roster.
+ */
+function isLiveRecording(filename: string): boolean {
+  return /_\d{8}_\d{6}\.jsonl$/.test(filename);
+}
+
+/** Picker label: "Home vs Away", falling back to the filename. */
+function recordingLabel(recording: Recording): string {
+  return recording.home_team && recording.away_team
+    ? `${recording.home_team} vs ${recording.away_team}`
+    : recording.filename;
+}
+
 export function RecordingPicker({ onReplayStarted }: RecordingPickerProps) {
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [selectedFilename, setSelectedFilename] = useState('');
@@ -40,11 +56,14 @@ export function RecordingPicker({ onReplayStarted }: RecordingPickerProps) {
         });
         if (!response.ok) throw new Error(`Could not load recordings (${response.status})`);
         const payload = (await response.json()) as RecordingsResponse;
-        setRecordings(payload.recordings);
-        const heroRecording = payload.recordings.find(
+        const visible = payload.recordings.filter(
+          (recording) => !isLiveRecording(recording.filename),
+        );
+        setRecordings(visible);
+        const heroRecording = visible.find(
           (recording) => recording.filename === HERO_RECORDING_FILENAME,
         );
-        const firstReplayable = payload.recordings.find((recording) => recording.match_id !== null);
+        const firstReplayable = visible.find((recording) => recording.match_id !== null);
         setSelectedFilename(heroRecording?.filename ?? firstReplayable?.filename ?? '');
       } catch (requestError) {
         if (!(requestError instanceof DOMException && requestError.name === 'AbortError')) {
@@ -113,9 +132,7 @@ export function RecordingPicker({ onReplayStarted }: RecordingPickerProps) {
                 value={recording.filename}
                 disabled={recording.match_id === null}
               >
-                {recording.home_team && recording.away_team
-                  ? `${recording.home_team} vs ${recording.away_team}`
-                  : recording.filename}
+                {recordingLabel(recording)}
               </option>
             ))}
           </select>

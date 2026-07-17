@@ -25,7 +25,10 @@ interface MomentResponse {
 
 type MintStatus = 'idle' | 'creating' | 'minting' | 'saving' | 'minted';
 
-const DEVNET_RPC_URL = 'https://api.devnet.solana.com';
+// Public devnet RPC is heavily per-IP rate-limited and browser-hostile — a
+// transient 429 during send/confirm surfaces as "Failed to fetch". For a
+// reliable demo, set VITE_SOLANA_RPC_URL to a dedicated devnet endpoint.
+const DEVNET_RPC_URL = import.meta.env.VITE_SOLANA_RPC_URL || 'https://api.devnet.solana.com';
 
 function readableMintError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -38,6 +41,9 @@ function readableMintError(error: unknown): string {
   }
   if (normalized.includes('failed to fetch') || normalized.includes('rpc')) {
     return 'The Solana devnet RPC did not respond. Please retry in a moment.';
+  }
+  if (normalized.includes('signedtransaction')) {
+    return 'Phantom appears to be on the wrong network. Open Phantom → Settings → Developer Settings → enable Testnet Mode and select Solana Devnet, then retry.';
   }
   return message || 'The moment could not be minted.';
 }

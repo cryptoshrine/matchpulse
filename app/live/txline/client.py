@@ -371,9 +371,10 @@ class TxLineClient:
     ) -> AsyncIterator["LiveEventFrame"]:
         """Yield normalized events for one TxLINE fixture.
 
-        This adapter intentionally matches the platform's shared live client
-        contract so the subscription manager can switch sources without
-        changing downstream processing.
+        This adapter intentionally matches
+        :meth:`StatsBombLiveClient.subscribe_to_match` so the shared live
+        subscription manager can switch providers without changing downstream
+        processing.
 
         Args:
             match_id: TxLINE fixture identifier.
@@ -395,6 +396,32 @@ class TxLineClient:
             auto_reconnect=auto_reconnect,
         )
         normalizer = TxLineNormalizer(match_id=match_id)
+
+        # The live SSE stream (/scores/stream) never carries Lineups, so without
+        # this every live event resolves player_id/team_id to None and surfaces
+        # raw IDs instead of names ("Lautaro Martínez"). Prime the name maps from
+        # a REST snapshot (falling back to the heavier updates pull if the
+        # snapshot omits lineups) before streaming. Best-effort by design —
+        # naming is enrichment; the live stream must not depend on it. Replays are
+        # unaffected: their recovery files already carry lineups in-stream.
+        try:
+            primed = await self.get_scores_snapshot(match_id)
+            learned = normalizer.prime_lineups(message.model_dump() for message in primed)
+            if learned == 0:
+                primed = await self.get_scores_updates(match_id)
+                learned = normalizer.prime_lineups(message.model_dump() for message in primed)
+            logger.info(
+                "live.txline.lineup_prime_completed",
+                match_id=match_id,
+                names_learned=learned,
+            )
+        except (TxLineError, httpx.HTTPError, ValueError) as exc:
+            logger.warning(
+                "live.txline.lineup_prime_failed",
+                match_id=match_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
 
         try:
             async for frame in self.stream_scores(fixture_id=match_id):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypeGuard, cast
@@ -460,6 +461,31 @@ class TxLineNormalizer:
             raise ValueError("TxLINE frame is missing FixtureId and no match_id was configured")
         return resolved
 
+    def prime_lineups(self, raw_frames: Iterable[Mapping[str, Any]]) -> int:
+        """Seed team/player names from lineup-bearing frames without emitting events.
+
+        The live SSE stream (``/scores/stream``) never delivers ``Lineups``, so a
+        live subscription would otherwise resolve every ``player_id``/``team_id``
+        to ``None`` and surface raw IDs. Priming from a REST snapshot/updates pull
+        at subscribe time populates the name maps so live events read as
+        "Lautaro Martínez", not an integer. Replays are unaffected — their
+        recovery files already carry lineups in-stream.
+
+        Only lineup names are ingested here; clock/period/event emission are
+        intentionally skipped so stale snapshot frames cannot backdate the clock
+        or replay past goals.
+
+        Args:
+            raw_frames: Raw TxLINE score frames (e.g. from a snapshot/updates pull).
+
+        Returns:
+            Total number of team + player names learned.
+        """
+        before = len(self._team_names) + len(self._player_names)
+        for frame in raw_frames:
+            self._ingest_lineups(dict(frame))
+        return len(self._team_names) + len(self._player_names) - before
+
     def _ingest_context(self, raw: dict[str, Any], match_id: int) -> None:
         """Update lineup names and clock/period context from a raw frame."""
         clock = _as_dict(_raw_value(raw, "Clock", "clock"))
@@ -471,6 +497,10 @@ class TxLineNormalizer:
         if status_id in STATUS_ID_TO_PHASE and status_id != 100:
             self._current_period[match_id] = STATUS_ID_TO_PHASE[status_id][1]
 
+        self._ingest_lineups(raw)
+
+    def _ingest_lineups(self, raw: dict[str, Any]) -> None:
+        """Populate team/player name maps from a frame's ``Lineups`` block, if any."""
         lineups = _raw_value(raw, "Lineups", "lineups")
         if not _is_any_list(lineups):
             return
